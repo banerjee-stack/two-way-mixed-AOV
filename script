@@ -1,0 +1,75 @@
+"Two-way Mixed ANOVA"
+output: html_document
+---
+# - Required columns in df:
+# id unique participant identifier
+# var1 between subject factor (factor with two levels)
+# var2 within subject factor labels (will be reshaped)
+# value outcome numeric (one row per id × var2 level)
+
+# Packages
+library(tidyverse)
+library(ez)         # ezANOVA for mixed ANOVA
+library(afex)       # alternative: aov_ez
+library(emmeans)    # post-hoc contrasts
+library(car)        # leveneTest, Anova
+library(rstatix)    # assumption tests and effect sizes
+
+# Expect df in long format: id, var1, var2, value
+glimpse(df)
+
+# Ensure correct types
+df <- df %>%
+  mutate(
+    id = as.factor(id),
+    var1 = as.factor(var1),
+    var2 = as.factor(var2)
+  )
+
+# Quick table to confirm counts
+df %>% count(var1, var2)
+
+anova_ez <- ez::ezANOVA(
+  data = df,
+  dv = .(value),
+  wid = .(id),
+  between = .(var1),
+  within = .(var2),
+  detailed = TRUE,
+  type = 3
+)
+anova_ez
+
+# Residuals (normality)
+resid_vals <- residuals(anova_afex$lm)
+shapiro_test <- shapiro.test(resid_vals)
+shapiro_test
+# QQ plot
+qqnorm(resid_vals); qqline(resid_vals)
+
+# Homogeneity of variance bw groups = Use values collapsed across var2 or test per cell
+df_collapsed <- df %>% group_by(id, var1) %>% summarize(mean_val = mean(value), .groups="drop")
+car::leveneTest(mean_val ~ var1, data = df_collapsed)
+
+#sphericity
+# Not required for 2-level within factor but shown for completeness
+if(nlevels(df$var2) > 2) {
+  afex::test_sphericity(anova_afex)
+} else {
+  message("Sphericity test not required for 2-level within factor")
+}
+
+# FX sizes
+# Partial eta-squared from afex model
+anova_table <- afex::nice(anova_afex)
+anova_table
+
+# emmeans for simple effects and interactions
+emm <- emmeans::emmeans(anova_afex, ~ var2 | var1)
+emm
+# Pairwise contrasts
+contrast(emm, method = "pairwise", adjust = "bonferroni")
+
+# Between-group differences at each var2 level
+emm_between <- emmeans::emmeans(anova_afex, ~ var1 | var2)
+contrast(emm_between, method = "pairwise", adjust = "bonferroni")
