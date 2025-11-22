@@ -1,0 +1,154 @@
+"""
+mixed_anova.py
+
+Provides a high-level API for performing a two-way mixed ANOVA
+with assumption testing and post-hoc comparisons.
+
+Python translation of the common R workflow using:
+- ezANOVA
+- afex::aov_ez
+- emmeans
+- rstatix
+
+Requires:
+    pandas
+    pingouin
+    scipy
+    statsmodels
+"""
+
+from __future__ import annotations
+import pandas as pd
+import pingouin as pg
+import numpy as np
+
+from scipy.stats import shapiro, levene
+import statsmodels.api as sm
+from statsmodels.stats.anova import AnovaRM
+
+
+def run_two_way_mixed_anova(
+    df: pd.DataFrame,
+    id_col: str = "id",
+    between: str = "var1",
+    within: str = "var2",
+    dv: str = "value",
+    posthoc_correction: str = "bonf"
+):
+    """
+    Run a two-way mixed ANOVA plus:
+        - normality tests
+        - homogeneity tests
+        - sphericity test
+        - post-hoc simple effects
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format dataframe: id, var1, var2, value
+    id_col : str
+        Subject identifier
+    between : str
+        Between-subject factor column
+    within : str
+        Within-subject factor column
+    dv : str
+        Dependent variable column
+    posthoc_correction : str
+        p-adjustment method for post-hoc tests
+
+    Returns
+    -------
+    dict
+        {
+            "anova": anova_table,
+            "residuals": residuals,
+            "shapiro": shapiro_result,
+            "levene": levene_result,
+            "sphericity": sphericity_result,
+            "posthoc_within": posthoc_within,
+            "posthoc_between": posthoc_between
+        }
+    """
+
+    # Ensure correct types
+    df = df.copy()
+    df[id_col] = df[id_col].astype("category")
+    df[between] = df[between].astype("category")
+    df[within] = df[within].astype("category")
+
+    # ------------------------------------------------------------------
+    # 1. Mixed ANOVA
+    # ------------------------------------------------------------------
+    anova_results = pg.mixed_anova(
+        data=df,
+        dv=dv,
+        subject=id_col,
+        within=within,
+        between=between
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Residuals for normality test
+    # ------------------------------------------------------------------
+    model = sm.OLS.from_formula(f"{dv} ~ {between} * {within} + {id_col}", data=df)
+    fit = model.fit()
+    residuals = fit.resid
+
+    shapiro_res = shapiro(residuals)
+
+    # ------------------------------------------------------------------
+    # 3. Homogeneity of variance (collapsed across within factor)
+    # ------------------------------------------------------------------
+    df_collapsed = df.groupby([id_col, between], as_index=False).agg(
+        mean_val=(dv, "mean")
+    )
+
+    levene_res = levene(
+        *[
+            df_collapsed.loc[df_collapsed[between] == g, "mean_val"].values
+            for g in df_collapsed[between].unique()
+        ]
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Sphericity test (only if > 2 levels)
+    # ------------------------------------------------------------------
+    if df[within].nunique() > 2:
+        sphericity_res = pg.sphericity(df, dv=dv, subject=id_col, within=within)
+    else:
+        sphericity_res = "Not required (2-level within-subject factor)"
+
+    # ------------------------------------------------------------------
+    # 5. Post-hoc: simple effects for within factor across between groups
+    # ------------------------------------------------------------------
+    posthoc_within = pg.pairwise_ttests(
+        data=df,
+        dv=dv,
+        within=within,
+        between=between,
+        subject=id_col,
+        padjust=posthoc_correction,
+        effsize="hedges"
+    )
+
+    # Post-hoc: between factor at each level of within
+    posthoc_between = pg.pairwise_ttests(
+        data=df,
+        dv=dv,
+        within=within,
+        between=between,
+        subject=id_col,
+        padjust=posthoc_correction,
+        effsize="hedges"
+    )
+
+    return {
+        "anova": anova_results,
+        "residuals": residuals,
+        "shapiro": shapiro_res,
+        "levene": levene_res,
+        "sphericity": sphericity_res,
+        "posthoc_within": posthoc_within,
+        "posthoc_between": posthoc_between,
+    }
